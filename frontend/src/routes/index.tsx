@@ -8,6 +8,7 @@ import { ActiveAlarmsList } from "@/components/rdas/ActiveAlarmsList";
 import { EventLogWidget } from "@/components/rdas/EventLogWidget";
 import { highestAlarm } from "@/lib/rdas-backend";
 import { useRdasSocket } from "@/hooks/use-rdas-socket";
+import { useAlarmSound } from "@/hooks/use-alarm-sound";
 
 export const Route = createFileRoute("/")({
   component: MainWindow,
@@ -19,6 +20,8 @@ function MainWindow() {
   const [clock, setClock] = useState("--:--:--");
   const [tab, setTab] = useState<TabKey>("live");
   const rdas = useRdasSocket();
+  // Siren only for live alarms (not the demo data shown before the backend connects).
+  const sound = useAlarmSound(rdas.alarms, rdas.connected && !rdas.usingMockData);
 
   useEffect(() => {
     const update = () => setClock(new Date().toISOString().slice(11, 19));
@@ -64,10 +67,16 @@ function MainWindow() {
             <AlarmPanel
               alarm={currentAlarm}
               disabled={!rdas.connected}
-              onAcknowledge={() => rdas.sendCommand({ action: "ack", code: currentAlarm.code })}
+              onAcknowledge={() => rdas.acknowledge(currentAlarm.code)}
               onSilence={() => rdas.sendCommand({ action: "silence", code: currentAlarm.code, duration_sec: 60 })}
             />
-            <ActiveAlarmsList alarms={rdas.alarms} />
+            <ActiveAlarmsList
+              alarms={rdas.alarms}
+              disabled={!rdas.connected}
+              onAcknowledge={rdas.acknowledge}
+              onAcknowledgeAll={rdas.acknowledgeAll}
+              sound={{ sounding: sound.sounding, muted: sound.muted, blocked: sound.blocked, onToggle: sound.toggle }}
+            />
           </div>
         </main>
       ) : (

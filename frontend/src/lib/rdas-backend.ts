@@ -7,8 +7,15 @@ import type { LogEvent } from "@/components/rdas/EventLogWidget";
 
 const priority: Record<AlarmLevel, number> = { normal: 0, warning: 1, high: 2, critical: 3 };
 
+/**
+ * The alarm the main panel should show. Unacknowledged alarms win over
+ * acknowledged ones (so acking the top alarm brings the next one forward);
+ * within each group the highest severity wins.
+ */
 export function highestAlarm(alarms: Alarm[]): Alarm {
-  return alarms.reduce((a, b) => (priority[b.level] > priority[a.level] ? b : a));
+  const unacked = alarms.filter((a) => a.level !== "normal" && !a.acked);
+  const pool = unacked.length ? unacked : alarms;
+  return pool.reduce((a, b) => (priority[b.level] > priority[a.level] ? b : a));
 }
 
 export const initialSignals: DriverSignal[] = [

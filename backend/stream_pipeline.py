@@ -1504,6 +1504,18 @@ class AlarmStateTracker:
             print(f"[alarm-cmd] WARNING: ignoring command with unknown code: {cmd!r}")
             return
         if action == "ack":
+            # Only log the first ack of an active alarm (ACK ALL / double clicks
+            # shouldn't spam the history), and ignore acks for inactive alarms.
+            if code in self.active_since and code not in self.acked:
+                title = ALARM_DEFS[code][0]
+                self._event_seq += 1
+                self.events.appendleft({
+                    "id": str(self._event_seq),
+                    "ts": _fmt_clock(now_t),
+                    "event": f"{code}_acked",
+                    "level": "normal",
+                    "message": f"{title} acknowledged",
+                })
             self.acked.add(code)
             print(f"[alarm-cmd] '{code}' acknowledged")
         elif action == "silence":

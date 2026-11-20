@@ -3,6 +3,7 @@ import type { Alarm } from "@/components/rdas/AlarmPanel";
 import type { DriverSignal } from "@/components/rdas/DriverStatusPanel";
 import type { LogEvent } from "@/components/rdas/EventLogWidget";
 import { initialAlarms, initialEvents, initialSignals } from "@/lib/rdas-backend";
+import { ALARM_SOUND_CONFIG } from "@/lib/alarm-sound-config";
 
 // The default matches AlarmBroadcastServer's default host/port in
 // stream_pipeline.py (RDASConfig.ws_host / ws_port). Override at build time
@@ -48,6 +49,14 @@ export type RdasSocketState = {
    * useful to queue client-side for a dispatcher action like this.
    */
   sendCommand: (cmd: Record<string, unknown>) => void;
+  /**
+   * Acknowledge one alarm. Marks it acked locally right away (so the sound
+   * stops instantly) and tells the backend; the backend's next state frame
+   * then confirms it.
+   */
+  acknowledge: (code: string) => void;
+  /** Acknowledge every currently active, unacknowledged alarm. */
+  acknowledgeAll: () => void;
 };
 
 export function useRdasSocket(url: string = DEFAULT_WS_URL): RdasSocketState {
@@ -64,7 +73,35 @@ export function useRdasSocket(url: string = DEFAULT_WS_URL): RdasSocketState {
 
   const wsRef = useRef<WebSocket | null>(null);
   const retryRef = useRef(0);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // code -> time (ms) the dispatcher hit ACK. Covers the short window where a
+  // state frame already in flight from the backend still says acked=false.
+  const pendingAcksRef = useRef<Map<string, number>>(new Map());
+  // Acknowledged alarms disappear from the live views after a short delay (they
+  // stay in the event log). ackTimersRef holds one removal timer per alarm code,
+  // and hiddenCodes is the set whose timer has fired.
+  const ackTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const [hiddenCodes, setHiddenCodes] = useState<Set<string>>(new Set());
+
+  function trackAcked(code: string) {
+    if (ackTimersRef.current.has(code)) return;
+    const timer = setTimeout(() => {
+      setHiddenCodes((prev) => new Set(prev).add(code));
+    }, ALARM_SOUND_CONFIG.ackedVisibleMs);
+    ackTimersRef.current.set(code, timer);
+  }
+
+  function untrackAcked(code: string) {
+    const timer = ackTimersRef.current.get(code);
+    if (timer) clearTimeout(timer);
+    ackTimersRef.current.delete(code);
+    setHiddenCodes((prev) => {
+      if (!prev.has(code)) return prev;
+      const next = new Set(prev);
+      next.delete(code);
+      return next;
+    });
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -95,7 +132,32 @@ export function useRdasSocket(url: string = DEFAULT_WS_URL): RdasSocketState {
         }
         if (msg.type !== "state") return;
 
-        if (Array.isArray(msg.alarms)) setAlarms(msg.alarms.length ? msg.alarms : [NO_ALARM]);
+        if (Array.isArray(msg.alarms)) {
+          const now = Date.now();
+          const pending = pendingAcksRef.current;
+          const incoming: Alarm[] = msg.alarms.map((a: Alarm) => {
+            const ackedAt = pending.get(a.code);
+            if (ackedAt === undefined) return a;
+            if (a.acked || now - ackedAt > ALARM_SOUND_CONFIG.ackGraceMs) {
+              pending.delete(a.code); // backend caught up (or grace expired): trust the backend
+              return a;
+            }
+            return { ...a, acked: true };
+          });
+          // forget pending acks for alarms that are no longer active
+          for (const code of [...pending.keys()]) {
+            if (!incoming.some((a) => a.code === code)) pending.delete(code);
+          }
+          // Start / reset the on-screen countdown for acknowledged alarms.
+          for (const a of incoming) {
+            if (a.acked) trackAcked(a.code);
+            else untrackAcked(a.code); // fresh occurrence of a previously acked alarm
+          }
+          for (const code of [...ackTimersRef.current.keys()]) {
+            if (!incoming.some((a) => a.code === code)) untrackAcked(code); // alarm cleared
+          }
+          setAlarms(incoming.length ? incoming : [NO_ALARM]);
+        }
         if (Array.isArray(msg.signals)) setSignals(msg.signals);
         if (Array.isArray(msg.events)) {
           setEvents(
@@ -138,6 +200,8 @@ export function useRdasSocket(url: string = DEFAULT_WS_URL): RdasSocketState {
       cancelled = true;
       if (timerRef.current) clearTimeout(timerRef.current);
       wsRef.current?.close();
+      ackTimersRef.current.forEach((t) => clearTimeout(t));
+      ackTimersRef.current.clear();
     };
   }, [url]);
 
@@ -150,10 +214,23 @@ export function useRdasSocket(url: string = DEFAULT_WS_URL): RdasSocketState {
     ws.send(JSON.stringify(cmd));
   }
 
+  function acknowledge(code: string) {
+    pendingAcksRef.current.set(code, Date.now());
+    trackAcked(code);
+    setAlarms((prev) => prev.map((a) => (a.code === code ? { ...a, acked: true } : a)));
+    sendCommand({ action: "ack", code });
+  }
+
+  function acknowledgeAll() {
+    alarms.filter((a) => a.level !== "normal" && !a.acked).forEach((a) => acknowledge(a.code));
+  }
+
+  const visibleAlarms = alarms.filter((a) => !hiddenCodes.has(a.code));
+
   return {
     connected,
     usingMockData: !everConnected,
-    alarms: alarms.length ? alarms : [NO_ALARM],
+    alarms: visibleAlarms.length ? visibleAlarms : [NO_ALARM],
     signals,
     events,
     metrics,
@@ -162,5 +239,7 @@ export function useRdasSocket(url: string = DEFAULT_WS_URL): RdasSocketState {
     videoT,
     faceBox,
     sendCommand,
+    acknowledge,
+    acknowledgeAll,
   };
 }
