@@ -1,0 +1,19 @@
+# Real, filled-in env files (contain your camera's RTSP credentials)
+backend/.env
+frontend/.env
+
+# Downloaded/auto-fetched binaries and model weights — scripts/setup_assets.py
+# and ultralytics re-fetch these, no need to version them
+/mediamtx/
+backend/yolo26m.pt
+backend/face_landmarker.task
+
+# Debug artifacts written by stream_pipeline.py's verification tooling
+backend/rdas_debug_full_frame.jpg
+backend/rdas_debug_roi_crop.jpg
+backend/rdas_debug_calculations.txt
+
+__pycache__/
+*.pyc
+
+venv/

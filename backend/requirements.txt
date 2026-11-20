@@ -1,0 +1,5 @@
+opencv-python
+numpy
+ultralytics        # YOLO26 detector
+mediapipe          # FaceLandmarker
+websockets         # structured alarm/telemetry broadcast to the web HUD
